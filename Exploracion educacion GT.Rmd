@@ -1,0 +1,358 @@
+---
+title: "Explorando la educación en Guatemala"
+output: html_notebook
+---
+
+```{r inicializacion, include=FALSE}
+library(readxl)
+library(tidyverse)
+library(stringr)
+library(purrr)
+library(broom)
+library(modelr)
+library(forcats)
+library(formattable)
+library(knitr)
+library(rpart)
+library(rpart.plot)
+library(ggdendro)
+
+theme_set(axonr::theme_axon(base_size = 20, base_family = "Open Sans")) # Utilizo un tema propio para customizar mis gràficas
+
+```
+
+Desde el año 2006 en Guatemala se han realizado evaluaciones a graduandos para verificar y evaluar la calidad educativa. Estas pruebas evalúan destrezas, habilidades y contenidos que le permitirán al estudiante desarrollar competencias para la vida en el área de Matemáticas y Lectura, según el [FAQ del MINEDUC](http://www.mineduc.gob.gt/digeduca/documents/2014/preguntasFrecuentes/FAQ4.pdf)
+
+Estas pruebas **no se ganan ni se pierden**, en todo caso únicamente clasifican los resultados de los estudiantes en 4 categorías:
+
+  * Excelente
+  * Satisfactorio
+  * Debe Mejorar
+  * Insatisfactorio
+  
+La DIGEDUCA califica en la categoría de **logro** a los estudiantes que alcanzan un nivel de desempeño excelente o satisfactorio y de **no logro** de lo contrario. Para un mejor entendimiento se describe a continuación lo que **sí** pueden hacer los alumnos en cada nivel de desempeño en la siguiente tabla.
+
+```{r descripcion categorias, echo=FALSE, message=FALSE, warning=FALSE}
+
+logro = c("No Logro", "No Logro", "Logro", "Logro")
+
+desempeño = c("Insatisfactorio", "Debe Mejorar", "Satisfactorio", "Excelente" )
+matematicas = c("Tiene una debilidad significativa en la comprensión y aplicación de conceptos matemáticos en aritmética, geometría, álgebra y estadística. Posee un vocabulario matemático limitado.",
+                "Puede establecer relaciones de orden y ejecutar operaciones matemáticas según ese orden; encuentra valores en sucesiones numéricas; calcula perímetros y áreas e identifica expresiones algebraicas.",
+                "Además de lo que hace en Debe Mejorar, realiza conversión de medidas de tiempo; utiliza los números reales para resolver problemas; simplifica expresiones numéricas y algebraicas.",
+"Además de lo que hace en Satisfactorio, resuelve operaciones combinadas y determina probabilidades.")
+
+lectura = c("Lee un texto con vocabulario sencillo y cotidiano e identifica la idea principal que se encuentra en el inicio de un párrafo",
+           "Además de lo que hace en el nivel Insatisfactorio, realiza inferencias a partir de información expresada en el párrafo e identifica secuencias.",
+           "Además de lo que hace en Debe Mejorar, infiere el significado de las palabras por contexto, relaciona la información para resolver problemas y abstrae la idea principal general del texto.",
+           "Además de lo que hace en Satisfactorio, sintetiza, compara la información y establece generalizaciones.")
+
+
+descripcion = data.frame(logro, desempeño, matematicas, lectura)
+
+descripcion %>% knitr::kable(col.names = c("Categoría", "Nivel de Desempeño", "Matemáticas", "Lectura"), caption = "Descripción de cada categoría según DIGEDUCA", format = "markdown")
+
+
+
+```
+
+
+```{r lectura y limpieza datos, include=FALSE}
+
+data = read_excel("~/Desktop/Analisis Pro/Analisis/Educacion GT/data/establecimientos/db_establecimientos_graduandos2016.xlsx", 
+                                    sheet = "20170201", skip = 1)
+
+resultados <- data %>% 
+  select(1:16, 37:42) %>% 
+  gather(variable, valor, 11:22) %>% 
+  mutate(variable = str_replace(variable, pattern = "Logro del Establecimiento en ", "") %>% 
+                    str_replace("Matemática", "Matematica") %>% 
+                    str_trim(),
+         valor = str_replace(valor, "N/D", "NA")) %>% 
+  separate(variable, c("Habilidad", "Año")) %>%
+  filter(valor != "NA") %>%
+  mutate(valor = as.numeric(valor),
+         Año   = as.numeric(Año)) %>% 
+  spread(Habilidad, valor)
+  
+
+names(resultados) <- c("codigo", "nombre", "direccion", "departamento", "municipio", "sector", "area", "plan", "jornada", "estudiantes", "año", "lectura", "matematica")
+
+```
+
+
+# Resultados por establecimiento
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# 
+# tmp <- resultados %>%
+#   filter(año == 2016, !is.na(lectura), !is.na(matematica)) %>% 
+#   select(lectura, matematica)
+# 
+# 
+# kmax = 15 # the maximum number of clusters we will examine; you can change this
+# totwss = rep(0,kmax) # will be filled with total sum of within group sum squares
+# for (i in 1:kmax){
+#   kclus = kmeans(scale(tmp),centers=i, nstart =20)
+#   totwss[i] = kclus$tot.withinss
+# }
+# towss = data.frame(k = 1:15, totwss)
+# 
+# qplot(totwss, x = k, y = totwss, geom = "point")
+# 
+# # Aparentemente, segun la grafica, se deben de realizar 3 clusters.
+
+data2016 <- resultados %>%
+  filter(año == 2016, !is.na(lectura), !is.na(matematica))
+
+set.seed(649)
+resultados.kclus = data2016 %>% 
+  select(lectura, matematica) %>% 
+  scale() %>%
+  kmeans(centers = 3, nstart = 50)
+
+numero.a.porcentaje <- function(x){
+  x <- x/sum(x)
+  percent(x)
+}
+
+data2016 = augment(resultados.kclus, data2016)  %>% 
+           mutate(.cluster = fct_recode(.cluster, "1" = "1", "2" = "3", "3" = "2") %>% 
+                             fct_relevel("1", "2"),
+                  lectura = percent(lectura/100),
+                  matematica = percent(matematica/100))
+
+resultados.kclus$size
+centros <- data2016 %>% 
+  group_by(.cluster) %>% 
+  summarise(lectura = mean(lectura),
+            matematica = mean(matematica),
+            n = n()) %>% 
+  mutate(pct = n/sum(n),
+         pct = percent(pct))
+
+
+
+modgobal <- data2016 %>% mutate(lectura = as.numeric(lectura),
+                    matematica = as.numeric(matematica)) %>% 
+  lm(matematica ~ lectura, data = .) 
+
+lecturaCoef <- modgobal %>% tidy() %>% filter(term == "lectura") %>% .$estimate %>% round(digits = 2)  
+
+variacionglobal <- modgobal %>% glance() %>% select(r.squared) %>% percent()
+```
+
+
+
+
+## Clusterización por porcentaje de alumnos que alcanzan el Logro
+
+Como primer paso exploraremos el porcentaje de los estudiantes de cada establecimiento que alcanzaron la categoría de logro. Para esto utilizaremos una metodología de clusterización por [k-means](https://en.wikipedia.org/wiki/K-means_clustering), la cual tiene muchas aplicaciones, que van desde [la segmentación de clientes](http://www.business-science.io/business/2016/08/07/CustomerSegmentationPt1.html) a la [detección de fraude en salud](http://dni-institute.in/blogs/k-means-clustering-examples-and-practical-applications/) y muchos otros. Básicamente esta metodología busca categorizar cada establecimiento en clusters homogéneos o similares.
+
+Lo más destacado de esta metodología es que es un modelo de aprendizaje no supervisado, es decir no le estamos diciendo al modelo que prediga algo, simplemente que nos cuente como se pueden categorizar los establecimientos basados en sus resultados.
+
+K-means no nos dice cuantos clusters son los que se pueden encontrar en nuestros datos por lo que se utilizó la metodología del [codo](https://en.wikipedia.org/wiki/Determining_the_number_of_clusters_in_a_data_set) para determinar el número apropiado de clusters. Luego de aplicar esta metodología se encuentra que el número es `k = 3` en donde podemos destacar lo siguiente:
+
+  * **Cluster 1**
+    * El primer cluster tiene el mejor desempeño de todos, en donde **en promedio** un `r centros$lectura[centros$.cluster == 1] ` de los estudiantes de esos establecimientos alcanzo la categoría de logro en lectura y un `r centros$matematica[centros$.cluster == 1] ` en matemática. 
+    * Lo característico de este grupo es que es un número reducido de establecimientos ya que representa a un `r centros$pct[centros$.cluster == 1]` del total de establecimientos.
+  * **Cluster 2** 
+    * Su desempeño en lectura decae 33 puntos con respecto al primer cluster y en matemática casi 50 puntos. Este cluster esta compuesto por `r centros$pct[centros$.cluster == 2] ` de los establecimientos. 
+    * Claramente este cluster de establecimientos desarrolla mucho más las habilidades en lectura que en matemática.
+  * **Cluster 3**
+    * Este cluster tiene un desempeño muy bajo, en donde en promedio únicamente un `r centros$lectura[centros$.cluster == 3]` de los estudiantes alcanza el logro en lectura y apenas un `r centros$matematica[centros$.cluster==3]` en matemática.
+    * Este cluster esta compuesto por la mayoría de los establecimientos evaluados, representando un `r centros$pct[centros$.cluster == 3] ` del total.
+
+
+Adicionalmente, podemos ver que no existe un incremento 1 a 1 entre las dos variables y podemos inferir de la gráfica que existe un aumento inferior. Al ajustar un modelo lineal, `Matemática ~ Lectura`, a todos los datos encontramos que por cada punto porcentual que aumenta el porcentaje de estudiantes en la variable lectura, existe un aumento de `r lecturaCoef` en la variable matemática. Este modelo únicamente explica `r variacionglobal` ($r^2$)de la variación en los datos.
+
+
+```{r, echo=FALSE, fig.height=7, fig.width=15, message=FALSE, warning=FALSE}
+
+centros %>% 
+  knitr::kable(col.names = c("Cluster", "Lectura", "Matemática", "No. Establecimientos", "% del total de establecimientos"))
+
+
+subti <- "Comparación en Lectura y Matemática. El símbolo de suma denota los centroides o promedios del cluster, mientras que la linea punteada establece la linea de igualdad de las variables" %>% str_wrap(width = 100)
+ 
+
+data2016 %>% 
+  mutate(sector = as_factor(sector) %>% fct_relevel("Privado")) %>% 
+  ggplot(aes(lectura, matematica, col = .cluster)) +
+  geom_point(alpha = 0.3) +
+  geom_point(data = centros, aes( col = NULL), shape = 3, size = 5, stroke = 2 ,color = "black")+
+  geom_rug(alpha = 0.2) +
+  geom_abline(slope = 1, intercept = 0 , linetype = "dashed", size = 2, col = "grey") +
+  labs(caption = "Resultados 2016 DIGEDUCA") +
+   ggtitle("Porcentaje de estudiantes que alcanzan el Logro por establecimiento", subti ) +
+   scale_color_brewer(type = "qual", palette = 6, direction = -1, name = "Cluster") +
+   scale_x_continuous(labels = scales::percent, "Lectura") +
+   scale_y_continuous(labels = scales::percent, name = "Matemática")
+
+ 
+
+
+```
+
+## Factores asociados: Una revisión de las competencias
+
+Algunos factores relacionados con el *logro* ya han sido explorados en este [link](https://sites.google.com/site/digeducadivulgacion/home/factores-asociados-al-aprendizaje-de-matematica-y-lectura-de-graduandos-2011-2013) y [este](https://sites.google.com/site/digeducadivulgacion/home/Factores-asociados-graduandos-2015). Estos estudios consideran variables relacionadas al establecimiento y al estudiante. Algunos de los variables con relación a los resultados son:
+
+  * El ISCC(Índice Socioeconomico Cultural): Explica un porcentaje elevado de la varianza $r^2$.
+  * Sexo del estudiante, principalmente en matemáticas.
+  * Repitencia en primaria.
+  * Si el estudiante trabaja para conseguir dinero.
+  * Idioma materno en lectura.
+  * Etnia en matemáticas. (El contexto asociado a la misma)
+  * Dominio de un idioma extranjero. 
+  * Uso de internet para la investigación.
+  * Cantidad de libros leídos por interés personal. 
+  * Computadora en el establecimiento.
+  * Nivel educativo del director.
+  * Frecuencia con la que se realiza la evaluación de matemática.
+  * Periodos de matemática.
+  * Acceso a los resultados de evaluaciones del MINEDUC en años anteriores.
+  * El director habla algún idioma indígena.
+
+
+Un elemento que no se explora es el rol de los educadores en los resultados obtenidos a lo largo de los años. A partir del 2015, los resultados por establecimiento contienen variables que miden el desarrollo de competencias específicas para las áreas evaluadas (Matemática y Lectura). Estas variables contienen el % de respuestas correctas que se obtuvieron en cada establecimiento. A mi criterio, el desarrollo de competencias es una responsabilidad compartida por los maestros y estudiantes. Por lo que parecería apropiado evaluar de forma indirecta el desempeño de los educadores de esta forma, aunque no lo haremos.
+
+Lo que haremos será inferir el efecto que tiene el desarrollo de esas competencias en el porcentaje de alumnos que alcanza el logro en cada establecimiento. Para esto ajustamos dos modelos que intetan explicar el logro en matemática y lectura: El modelo lineal múltiple y el modelo rpart en R. [(Recursive Partitioning)](https://es.wikipedia.org/wiki/Particionamiento_recursivo), *Esta técnica construye arboles de decisión que modelan la influencia de variables explicativas sobre la variable de estudio.*.
+
+
+Las competencias a utilizar como variables explicatorias son:
+
+  * Matemáticas
+    * Definiciones y Cálculos matemáticos
+    * Pensamiento matemáticos
+    * Resolución de problemas
+  * Comprensión lectora
+    * Nivel literal
+    * Nivel inferencial
+    * Nivel crítico
+
+### Modelos lineales
+
+```{r, fig.height=7, fig.width=15, message=FALSE, warning=FALSE, include=FALSE}
+
+
+competencias <- data %>% select(1, contains("respuestas correctas del establecimiento")) 
+
+nombres <- c("codigo", "Literal", "Inferencial", 
+             "Crítico", "Definiciones",
+             "Pensamiento",
+             "Resolucion")
+
+names(competencias) <- nombres
+
+competencias.tidy <- augment(resultados.kclus, competencias) %>% 
+           mutate(.cluster = fct_recode(.cluster, "1" = "1", "2" = "3", "3" = "2") %>% 
+                             fct_relevel("1", "2")) %>% 
+  gather(variable, valor, -`codigo`, -.cluster ) %>% 
+  separate(variable, into = c("Competencia", "Habilidad"), sep = "comp") %>% 
+  mutate(Habilidad = recode(Habilidad, .lectura = "Lectura",
+                            .matematica = "Matematica")) %>% 
+  spread(Competencia, valor)
+
+
+
+df <- competencias %>% 
+  left_join(data2016) %>% 
+  select(2:7, 18:19,  Critico = Crítico) %>%
+  mutate(lectura = as.numeric(lectura),
+         matematica = as.numeric(matematica),
+         Literal = Literal/100,
+         Inferencial = Inferencial/100,
+         Critico = Critico/100,
+         Definiciones = Definiciones/100,
+         Pensamiento  = Pensamiento/100,
+         Resolucion   = Resolucion/100)
+
+modlect <- rpart(lectura ~., data = df, method = "anova") 
+modmat <-  rpart(matematica ~., data = df, method = "anova")
+
+lmmat <- lm(matematica~Definiciones + Pensamiento + Resolucion, data = df) 
+lmlect <- lm(lectura ~ Inferencial + Literal + Critico, data = df)
+rq <- lmmat %>% glance() %>% select(1) %>% percent()
+rq2 <- lmlect %>% glance() %>% select(1) %>% percent()
+
+```
+
+Una vez ajustados los modelo, los podemos examinar. En primer lugar observamos que todas las variables utilizadas para predecir ambos modelos son significativas, esto se concluye a raíz del valor del p.value en las tablas B y D. 
+
+El modelo utilizado para explicar el % de logro en matemáticas explica `r rq` de la variación, por lo que podemos concluir que se ajusta bastante bien. En la gráfica A, observamos la influencia que tienen sobre la variable dependiente cada variable explicatoria. En este caso la competencia: **Definiciones y Cálculos matemáticos** es la que más influye seguido de **Resolución de problemas**. En último lugar se encuentra el pensamiento matemático, con una influencia cercana a la de las dos anteriores.
+
+En el caso del modelo que explica el % de logro en lectura, este modelo explica `r rq2` de la variación, por lo que también concluimos que es un buen modelo. En la gráfica C observamos efectos más pronunciados en el nivel **inferencial** de comprensión lectora, seguido del nivel **literal**. En último lugar se encuentra el nivel **crítico** y este influye en menos medida en comparación a las dos anteriores.
+
+```{r, echo=FALSE, fig.height=7, fig.width=15, message=FALSE, warning=FALSE}
+
+
+p1 <- lmmat %>% GGally::ggcoef(exclude_intercept = TRUE, vline_color = "red", errorbar_height = .2) +
+  ggtitle("Coeficientes para competencias matemáticas") +
+    annotate("text", x = 0.1, y = 3, label = paste("R cuadrado:", rq)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(5)) +
+  ylab(NULL) +
+  axonr::theme_axon(base_family = "Open Sans", base_size = 15)
+
+p2 <- lmmat %>% tidy() %>%
+  # select( Variable=term, p.value, estimate) %>% 
+  mutate(p.value = scales::scientific(p.value, digits = 2),
+         estimate = round(estimate,2),
+         std.error = round(std.error, digits = 3),
+         statistic = round(statistic, 2)) %>% 
+  gridExtra::tableGrob(rows = NULL)
+
+p3 <- lmlect %>% GGally::ggcoef(exclude_intercept = TRUE, vline_color = "red", errorbar_height = .2) +
+  ggtitle("Coeficientes para niveles de comprensión lectora") +
+  annotate("text", x = 0.2, y = 3, label = paste("R cuadrado:", rq2)) +
+  scale_x_continuous(breaks = scales::pretty_breaks(5)) +
+  ylab(NULL) +
+  axonr::theme_axon(base_family = "Open Sans", base_size = 15)
+
+
+
+p4 <- lmlect %>% tidy() %>%
+  # select( Variable=term, p.value, estimate) %>% 
+  mutate(p.value = scales::scientific(p.value, digits = 2),
+         estimate = round(estimate,2),
+         std.error = round(std.error, digits = 3),
+         statistic = round(statistic, 2)) %>% 
+  gridExtra::tableGrob(rows = NULL)
+
+
+ggpubr::ggarrange(p1, p2, p3, p4, labels = c("A", "B", "C", "D"))
+
+
+
+```
+
+## Arboles de decisión
+
+La ventaja de utilizar un árbol de decisión es que su interpretabilidad es bastante simple. Por ejemplo, podemos utilizar este concepto para ilustrar el efecto que tienen ciertas variables en otra variable de interés.
+
+En este caso observamos que nuevamente la variable **Definiciones y Cálculos matemáticos** vuelve a ser la variable que mas incidencia tiene. Esto lo podemos decir ya que esta variable es la que se encuentra en la raíz del árbol. En todo caso si un establecimiento obtiene un % de respuestas correctas menor a 36% el establecimiento alcanzará un logro de 0.014% en promedio, como se puede observar en la primer hoja del árbol. Lo alarmante de estos resultados es que en esta hoja se encuentran 2547 establecimientos, un alto porcentaje del total de establecimientos en la base de datos (4107).
+
+Otra hoja interesante es la de Definiciones < 0.42 y Pensamiento matemático <0.46, en donde 298 establecimientos promedian un porcentaje de estudiantes que alcanzan el logro de 0.22. En la ultimas dos hojas, observamos que si se alcanza un porcentaje mayor a 0.63 en resolución de problemas se puede llegar a alcanzar un % de logro entre 71% y 93%.
+
+En todo caso podemos inferir que si queremos mejorar el porcentaje de logro en matemática, debemos aumentar/mejorar la competencia de **Definiciones y Cálculos matemáticos**, seguido de la **Resolución de problemas**.
+
+
+```{r, echo=FALSE, fig.height=7, fig.width=10, message=FALSE, warning=FALSE}
+
+prp(modmat, extra = 1, yesno = 2, box.palette = "RdGn", type =0, branch = 0.5, varlen = 20, 
+    tweak = 1.2, under.font = "Open Sans", add.labs =  TRUE)
+title(list("Arbol de decisión: Competencias Matemáticas y su efecto en el logro", cex = 1.5))
+
+```
+
+En este árbol de decisión solamente se utilizan dos variables para segmentar los establecimientos, nivel de comprensión de lectura inferencial y literal. Nuevamente observamos que la variable con mayor influencia en el modelo lineal vuelve a estar en la base del árbol. Podemos ver una concentración de establecimientos similares en las primeras cuatro hojas, entre 768 a 862 establecimientos. En las tres hojas de la derecha igualmente observamos una concentración similar de establecimientos.
+
+De esto podríamos inferir que si queremos aumentar el porcentaje de logro en el establecimiento, se debe de mejorar el nivel inferencial de comprensión lectora seguido del nivel literal.
+
+
+```{r, echo=FALSE, fig.height=7, fig.width=10, message=FALSE, warning=FALSE}
+prp(modlect, extra = 1, yesno = 2, box.palette = "RdGn", varlen = 20, tweak = 1.2, under.font = "Open Sans", add.labs =  TRUE)
+title(list("Arbol de decisión: Nivel de comprensión de lectura y su efecto en el logro", cex = 1.5))
+```
+
+Con esto concluimos este breve análisis, en una entrada posterior se explicará como se realizaron algunos de los análisis realizados aquí para que les sirva como ejemplo o base para sus propios análisis.
